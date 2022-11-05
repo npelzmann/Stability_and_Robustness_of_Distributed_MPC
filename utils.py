@@ -12,10 +12,10 @@ def condensed_form(A: np.array, B: np.array,
                    E_u: np.array, bb: np.array, C_x: np.array = None, 
                    C_u: np.array = None, C_N: np.array = None,
                    c_x: np.array = None, c_u: np.array = None, 
-                   c_N: np.array = None, N: int = 2) -> np.array:
+                   c_N: np.array = None, x_t: np.array = None, N: int = 2) -> np.array:
     nx, nu = B.shape
+    x_t = np.zeros(nx) if x_t is None else x_t
     I_N = np.eye(N)
-    I_Np = np.eye(N+1)
     Bh = np.zeros(((N+1)*nx, N*nu))
     Ah = sp.kron(np.eye(N+1,1), np.eye(nx)).todense()
     for j in range(1, N+1):
@@ -29,10 +29,12 @@ def condensed_form(A: np.array, B: np.array,
     H = Bh.T @ Hh @ Bh + sp.kron(I_N, R)
     G = Bh.T @ Hh @ Ah 
     W = Q + Ah.T @ Hh @ Ah 
+    gxt = (-2 * Bh.T @ Hh.T @ sp.kron(np.ones(N+1), x_t).reshape(-1, 1)).T
 
-    b = sp.kron(np.ones((N, 1)), bb.reshape(-1, 1))
-    F = sp.kron(I_Np, E_x) @ Ah 
-    E = sp.kron(I_Np, E_x) @ Bh + sp.kron(np.vstack((I_N, np.zeros((1, N)))), E_u)
+    b = np.kron(np.ones(N), bb)
+    xi_mul = sp.hstack((sp.kron(I_N, E_x), sp.csr_matrix(np.zeros((N*E_x.shape[0], nx)))))
+    F = xi_mul @ Ah 
+    E = xi_mul @ Bh + sp.kron(I_N, E_u)
 
     M = np.block([[H, G], [G.T, W]])
 
@@ -40,25 +42,25 @@ def condensed_form(A: np.array, B: np.array,
         D = C = ch = None
     elif C_x is None:
         C = sp.kron(I_N, C_u)
-        ch = sp.kron(np.ones((N, 1)), c_u.reshape(-1, 1))
-        D = None
+        ch = np.kron(np.ones(N), c_u)
+        D = np.zeros((C.shape[0], (N+1)*nx)) @ Ah
     elif C_u is None:
         if C_N is None:
             C_N = C_x
             c_N = c_x
-        D = sp.block_diag(0, (sp.kron(I_N, C_x) @ Ah))
-        C = np.vstack(sp.kron(np.eye(N-1), C_x), C_N) @ Bh
-        ch = np.vstack(sp.kron(np.ones(N-1, 1), c_x),
+        D = np.vstack(np.zeros((1, (N+1)*nx)), sp.block_diag((sp.kron(I_N, C_x), C_N))) @ Ah
+        C = np.vstack(sp.kron(I_N, C_x), C_N) @ Bh
+        ch = np.hstack(np.kron(np.ones(N-1), c_x),
                        c_N)
     else:
-        D = sp.block_diag(0, (sp.kron(I_N, C_x) @ Ah))
-        C_ = np.vstack(sp.kron(np.eye(N-1), C_x), C_N)
+        D = np.vstack(np.zeros((1, (N+1)*nx)), sp.block_diag((sp.kron(I_N, C_x), C_N))) @ Ah
+        C_ = sp.block_diag((sp.kron(I_N, C_x), C_N))
         C = np.vstack(sp.kron(I_N, C_u), C_ @ Bh)
-        ch = np.vstack(sp.kron(np.ones(N, 1), c_u), 
-                       sp.kron(np.ones(N-1, 1), c_x),
+        ch = np.hstack(np.kron(np.ones(N), c_u), 
+                       np.kron(np.ones(N), c_x),
                        c_N)
 
-    return M, E, F, b, C, D, ch
+    return M, H, G, gxt, E, F, b, C, D, ch
 
 
 class node(object):
@@ -81,13 +83,22 @@ class node(object):
         self.Q = eye(self.nx)
         self.P = la.solve_discrete_are(self.A, self.B, self.Q, self.R)
 
-        self.M = self.E = self.F = self.b = None
+        self.M = self.H = self.G = self.gxt = None
+        self.E = self.F = self.b = None
+        self.C = self.D = self.ch = None
+        self.x_par = self.x_par_centr = self.z = self.xi = self.lda = None
 
     def dense_problem_matrices(self, E_x: np.array, E_u: np.array, bb: np.array):
-        self.M, self.E, self.F, self.b, _, _, _ = condensed_form(self.A, self.B, 
-                                                                 self.Q, self.R, self.P,
-                                                                 E_x, E_u, bb,
-                                                                 C_u=self.C_u, c_u=self.c_u, N=self.N)
+        _, self.H, self.G, self.gxt, self.E, self.F, \
+        self.b, self.C, self.D, self.c = condensed_form(self.A, self.B, 
+                                                        self.Q, self.R, self.P,
+                                                        E_x, E_u, bb,
+                                                        C_u=self.C_u, c_u=self.c_u, 
+                                                        x_t=self.xt, N=self.N)
+        
+    def set_up_cvx_vars(self):
+        self.x_par_centr = cvxpy.Parameter(self.nx)
+        self.z = cvxpy.Variable(self.nu * self.N)
 
     def simulate_timestep(self, u: np.array):
         self.x = np.squeeze(np.asarray(self.A.dot(self.x) + self.B.dot(u)))
@@ -95,7 +106,7 @@ class node(object):
     def formulate_primal(self):
         self.lda = cvxpy.Parameter()
         self.x_par = cvxpy.Parameter(self.nx)
-        self.xi = cvxpy.Variable(self.nu * N)
+        self.xi = cvxpy.Variable(self.nu * self.N)
         objective = self.xi.T @ self.M @ self.xi + (2 * self.x_par.T @ self.G.T + self.lda.T @ self.E) @ self.xi
         if self.D:
             constraints = [self.D @ self.x_par + self.C @ self.xi <= self.c]
@@ -144,9 +155,11 @@ class network(object):
 
         self.x_init = cvxpy.Parameter(self.nx)
         self.u_var = cvxpy.Variable((self.nu, N))
-        self.centr_prob_def()
 
         self.dense_agent_problem_matrices()
+        
+        self.centr_prob_def()
+        self.centr_prob_def2()
 
     @property
     def x(self):
@@ -168,6 +181,16 @@ class network(object):
         u = self.u_var[:,0].value
         u_split = np.split(u, np.cumsum([n.nu for n in self.nodes]))
         return u_split[:-1]
+    
+    def centr_solve2(self) -> List[np.array]:
+        for n in self.nodes:
+            n.x_par_centr.value = n.x
+        self.centr_prob2.solve(solver=cvxpy.OSQP, warm_start=True)
+        u = []
+        for n in self.nodes:
+            u.append(n.z[0:n.nu].value)
+        return u
+        
 
     def fdfbs_solve(self) -> List[np.array]:
         lda0 = np.zeros(self.N * self.E_x.shape[0])
@@ -189,7 +212,6 @@ class network(object):
         return u
 
     def centr_prob_def(self) -> None:
-        # Define problem
         x = cvxpy.Variable((self.nx, self.N+1))
         objective = 0
         constraints = [x[:,0] == self.x_init]
@@ -201,3 +223,19 @@ class network(object):
         objective += cvxpy.quad_form(x[:,self.N] - self.xt, self.P)
 
         self.centr_prob = cvxpy.Problem(cvxpy.Minimize(objective), constraints)
+        
+    def centr_prob_def2(self) -> None:
+        objective = 0
+        coupling_sum = 0
+        constraints = []
+        for n in self.nodes:
+            n.set_up_cvx_vars()
+            objective += cvxpy.quad_form(n.z, n.H)
+            objective += 2 * n.x_par_centr.T @ n.G.T @ n.z
+            objective += n.gxt @ n.z
+            constraints += [n.D @ n.x_par_centr + n.C @ n.z <= n.c]
+            coupling_sum += n.F @ n.x_par_centr + n.E @ n.z
+        constraints += [coupling_sum <= self.nodes[0].b]
+        
+        self.centr_prob2 = cvxpy.Problem(cvxpy.Minimize(objective), constraints)
+            
