@@ -4,6 +4,7 @@ import numpy as np
 from numpy import eye
 import cvxpy
 from typing import List
+import matplotlib.pyplot as plt
 
 
 def condensed_form(A: np.array, B: np.array, 
@@ -83,6 +84,7 @@ class node(object):
         self.Q = eye(self.nx)
         self.P = la.solve_discrete_are(self.A, self.B, self.Q, self.R)
 
+        self.node_prob = None
         self.M = self.H = self.G = self.gxt = None
         self.E = self.F = self.b = None
         self.C = self.D = self.ch = None
@@ -104,37 +106,42 @@ class node(object):
         self.x = np.squeeze(np.asarray(self.A.dot(self.x) + self.B.dot(u)))
 
     def formulate_primal(self):
-        self.lda = cvxpy.Parameter()
+        self.lda = cvxpy.Parameter(self.E.shape[0])
         self.x_par = cvxpy.Parameter(self.nx)
         self.xi = cvxpy.Variable(self.nu * self.N)
-        objective = self.xi.T @ self.M @ self.xi + (2 * self.x_par.T @ self.G.T + self.lda.T @ self.E) @ self.xi
-        if self.D:
-            constraints = [self.D @ self.x_par + self.C @ self.xi <= self.c]
+        objective = cvxpy.quad_form(self.xi, self.H)
+        objective += 2 * self.x_par.T @ self.G.T @ self.xi
+        objective += self.gxt @ self.xi
+        objective += self.lda.T @ self.E @ self.xi
+        constraints = [self.D @ self.x_par + self.C @ self.xi <= self.c]
         self.node_prob = cvxpy.Problem(cvxpy.Minimize(objective), constraints)
 
-    def solve_primal(self, lda: np.array):
+    def solve_node_primal(self, lda: np.array):
         if self.node_prob is None:
             self.formulate_primal()
         self.lda.value = lda
         self.x_par.value = self.x
         self.node_prob.solve(solver=cvxpy.OSQP, warm_start=True)
         u = self.xi.value
-        return u, self.F @ self.x + self.E @ u
+        return u[:self.nu], np.asarray(self.F @ self.x + self.E @ u).ravel()
 
 
 class network(object):
 
     def __init__(self, 
                  N: int = 2, 
-                 fdfbs_iterations: int = 100,
-                 fdfbs_eps: float = 1e-4) -> None:
+                 ada_iterations: int = 20,
+                 ada_eps: float = 1e-4,
+                 ada_alpha: float = 0.5) -> None:
         self.nodes = np.array([node(x0=[0., 0.5, 0., -0.5], xt=[1., 0.,  1.,  0.], N=N), 
                                node(x0=[1.5, -0.5, 0., 0.], xt=[2.,   0.,  1.,  0.], N=N), 
                                node(x0=[0.5, 0.2, 0.7, -0.2], xt=[1.5, 0., 1 + 1/np.sqrt(2), 0.], N=N)])
         self.D = np.array([[1, 0, 1], [-1, 1, 0], [0, -1, -1]])
 
         self.N = N
-        self.lb = fdfbs_iterations
+        self.lb = ada_iterations
+        self.epsilon = ada_eps
+        self.alpha = ada_alpha
 
         self.M = len(self.nodes)
         self.nu = np.sum([n.nu for n in self.nodes])
@@ -155,6 +162,7 @@ class network(object):
 
         self.x_init = cvxpy.Parameter(self.nx)
         self.u_var = cvxpy.Variable((self.nu, N))
+        self.lda = None
 
         self.dense_agent_problem_matrices()
         
@@ -189,25 +197,30 @@ class network(object):
         u = []
         for n in self.nodes:
             u.append(n.z[0:n.nu].value)
+        self.lda_centr = self.centr_prob2.constraints[-1].dual_value
         return u
-        
 
-    def fdfbs_solve(self) -> List[np.array]:
-        lda0 = np.zeros(self.N * self.E_x.shape[0])
-        lda = [lda0]
+    def ada_solve(self) -> List[np.array]:
+        lda0 = np.zeros(self.N * self.E_x.shape[0]) if self.lda is None else self.lda
+        lda = np.zeros((lda0.shape[0], self.lb + 1))
+        lda[:, 0] = lda0
         mu = lda0
         theta = 1.
         for l in range(self.lb):
-            dlda = 0
+            dlda = np.zeros(lda0.shape)
             u = []
             for n in self.nodes:
-                _u, _dlda = n.solve_primal(lda[l])
-                dlda += _dlda - self.b + self.epsilon * lda[l]
-                u.append(_u)
-            mu_new = np.maximum(np.zeros(lda.shape), lda[l] + self.alpha * dlda)
+                u_, dlda_ = n.solve_node_primal(lda[:, l])
+                dlda += dlda_
+                u.append(u_)
+            dlda += -n.b + self.epsilon * lda[:, l]
+            mu_new = np.maximum(np.zeros(lda0.shape), lda[:, l] + self.alpha * dlda)
             theta_new = 0.5 * (1 + np.sqrt(1. + 4. * theta**2.))
-            lda[l+1] = mu + (theta - 1) / theta_new * (mu_new - mu)
-            theta = theta_new, mu = mu_new
+            lda[:, l+1] = mu + (theta - 1) / theta_new * (mu_new - mu)
+            theta = theta_new
+            mu = mu_new
+        
+        self.lda = lda[:, -1]
 
         return u
 
@@ -238,4 +251,12 @@ class network(object):
         constraints += [coupling_sum <= self.nodes[0].b]
         
         self.centr_prob2 = cvxpy.Problem(cvxpy.Minimize(objective), constraints)
+        
+    def plot_convergence(self) -> None:
+        lda_err = self.lda - self.lda_centr
+        lda_err_norm = np.linalg.norm(lda_err, ord=1, axis=0)
+        plt.plot(lda_err_norm)
+        plt.xlabel('Iterations l')
+        plt.ylabel('$||\lambda_l - \lambda_\text{centr}||_1$')
+        plt.show()
             

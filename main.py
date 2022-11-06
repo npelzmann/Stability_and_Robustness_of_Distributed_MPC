@@ -13,10 +13,10 @@ control_inputs = np.zeros((nw.nu, nsim))
 for i in range(nsim):
     # u_centr = nw.centr_solve()
     u_centr2 = nw.centr_solve2()
-    # u = nw.fdfbs_solve()
-    nw.simulate_timestep(u_centr2)
+    u = nw.ada_solve()
+    nw.simulate_timestep(u)
     trajectory[:, i+1] = nw.x
-    control_inputs[:, i] = np.hstack(u_centr2)
+    control_inputs[:, i] = np.hstack(u)
 
 for i in range(nw.M):
     plt.plot(trajectory[4*i, :], trajectory[4*i+2, :], marker='x')
