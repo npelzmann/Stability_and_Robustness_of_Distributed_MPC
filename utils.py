@@ -129,19 +129,21 @@ class node(object):
 class network(object):
 
     def __init__(self, 
+                 nodes: List[node],
+                 incidence_matrix: np.array,
+                 distance_bounds: np.array = None,
                  N: int = 2, 
                  ada_iterations: int = 100,
                  ada_eps: float = 1e-4,
                  ada_alpha: float = 0.9) -> None:
-        self.nodes = np.array([node(x0=[1.5, -0.3, 0., 0.], xt=[1.,   0.,  1.,  0.], N=N),
-                               node(x0=[0.5, -0.3, 0., -0.4], xt=[2., 0.,  1.,  0.], N=N),  
-                               node(x0=[0.5,  0.2, 0.7, -0.2], xt=[1.5, 0., 2., 0.], N=N)])
-        self.D = np.array([[1, 0, 1], [-1, 1, 0], [0, -1, -1]])
-
+        self.nodes = nodes
+        self.D = incidence_matrix
         self.N = N
         self.lb = ada_iterations
         self.epsilon = ada_eps
         self.alpha = ada_alpha
+        for n in self.nodes:
+            n.N = N
 
         self.M = len(self.nodes)
         self.nu = np.sum([n.nu for n in self.nodes])
@@ -158,7 +160,10 @@ class network(object):
         self.E_u = np.zeros((np.shape(self.E_x)[0], self.nu))
         self.C_u = la.block_diag(*[n.C_u for n in self.nodes])
         self.c_u = np.hstack([n.c_u for n in self.nodes])
-        self.bb = np.ones(np.shape(self.E_x)[0])
+        if distance_bounds is not None:
+            self.bb = np.kron([1, 1, 1, 1], distance_bounds).ravel()
+        else:
+            self.bb = np.ones(np.shape(self.E_x)[0])
 
         self.x_init = cvxpy.Parameter(self.nx)
         self.u_var = cvxpy.Variable((self.nu, N))
