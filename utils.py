@@ -32,10 +32,10 @@ def condensed_form(A: np.array, B: np.array,
     W = Q + Ah.T @ Hh @ Ah 
     gxt = (-2 * Bh.T @ Hh.T @ sp.kron(np.ones(N+1), x_t).reshape(-1, 1)).T
 
-    b = np.kron(np.ones(N), bb)
-    xi_mul = sp.hstack((sp.kron(I_N, E_x), sp.csr_matrix(np.zeros((N*E_x.shape[0], nx)))))
+    b = np.kron(np.ones(N-1), bb)
+    xi_mul = sp.hstack((sp.kron(I_N[1:,:], E_x), sp.csr_matrix(np.zeros(((N-1)*E_x.shape[0], nx)))))
     F = xi_mul @ Ah 
-    E = xi_mul @ Bh + sp.kron(I_N, E_u)
+    E = xi_mul @ Bh + sp.kron(I_N[1:,:], E_u)
 
     M = np.block([[H, G], [G.T, W]])
 
@@ -80,7 +80,7 @@ class node(object):
         
         self.nx, self.nu = np.shape(self.B)
 
-        self.R = eye(self.nu) * 5
+        self.R = eye(self.nu) * 100
         self.Q = eye(self.nx)
         self.P = la.solve_discrete_are(self.A, self.B, self.Q, self.R)
 
@@ -206,7 +206,7 @@ class network(object):
         return u, self.lda_centr
 
     def ada_solve(self) -> List[np.array]:
-        lda0 = np.zeros(self.N * self.E_x.shape[0]) if self.lda_ada is None else self.lda_ada[:, -1]
+        lda0 = np.zeros((self.N-1) * self.E_x.shape[0]) if self.lda_ada is None else self.lda_ada[:, -1]
         lda = np.zeros((lda0.shape[0], self.lb + 1))
         lda[:, 0] = lda0
         mu = lda0
@@ -227,7 +227,7 @@ class network(object):
         
         self.lda_ada = lda
 
-        return u, lda
+        return u, lda[:, -1]
 
     def centr_prob_def(self) -> None:
         x = cvxpy.Variable((self.nx, self.N+1))
@@ -265,4 +265,12 @@ class network(object):
         plt.xlabel('Iterations $l$')
         plt.ylabel(r'$||\lambda_{\epsilon, l} - \lambda_{centr}||_1$')
         plt.show()
+
+    def calcualte_metrics(self) -> float:
+        constr_viol = np.sum(np.maximum(self.E_x @ self.x - self.bb , 0))
+        try:
+            lda_dist = np.linalg.norm(self.lda_ada[:, -1] - self.lda_centr, ord=1)
+        except TypeError:
+            lda_dist = np.nan
+        return constr_viol, lda_dist
             
