@@ -1,3 +1,4 @@
+import os
 import scipy.sparse as sp
 import scipy.linalg as la
 import numpy as np
@@ -6,6 +7,9 @@ import cvxpy
 from typing import List
 import matplotlib.pyplot as plt
 
+plt.rcParams.update({
+    'text.usetex': False
+})
 
 def condensed_form(A: np.array, B: np.array, 
                    Q: np.array, R: np.array, 
@@ -206,6 +210,7 @@ class network(object):
         return u, self.lda_centr
 
     def ada_solve(self) -> List[np.array]:
+        assert self.lb >= 1, 'ADA needs at least one iteration.'
         lda0 = np.zeros((self.N-1) * self.E_x.shape[0]) if self.lda_ada is None else self.lda_ada[:, -1]
         lda = np.zeros((lda0.shape[0], self.lb + 1))
         lda[:, 0] = lda0
@@ -260,17 +265,153 @@ class network(object):
     def plot_convergence(self) -> None:
         lda_err = (self.lda_ada.T - self.lda_centr).T
         lda_err_norm = np.linalg.norm(lda_err, ord=1, axis=0)
+        plt.figure(figsize=(6, 6))
         plt.plot(lda_err_norm)
         plt.yscale('log')
         plt.xlabel('Iterations $l$')
-        plt.ylabel(r'$||\lambda_{\epsilon, l} - \lambda_{centr}||_1$')
-        plt.show()
+        plt.ylabel(r'$||\lambda_{\epsilon, l} - \lambda_{optimal}||_1$')
+        plt.grid(which='both')
+
+        if not os.path.exists(os.path.join(os.getcwd(), 'figures')):
+            os.mkdir(os.path.join(os.getcwd(), 'figures'))
+        plt.savefig(os.path.join(os.getcwd(), 'figures', 'lambda_convergence.pdf'))
+        plt.close()
 
     def calcualte_metrics(self) -> float:
-        constr_viol = np.sum(np.maximum(self.E_x @ self.x - self.bb , 0))
+        constraint_violations = np.sum(np.maximum(self.E_x @ self.x - self.bb , 0))
         try:
             lda_dist = np.linalg.norm(self.lda_ada[:, -1] - self.lda_centr, ord=1)
         except TypeError:
             lda_dist = np.nan
-        return constr_viol, lda_dist
-            
+        return constraint_violations, lda_dist
+        
+
+def simulate_trajectory(nw: network, 
+                        nsim: int,
+                        plot_convergence_at: int = None):
+    use_centr_contr = True if nw.lb <= 0 else False
+
+    trajectory = np.zeros((nw.nx, nsim + 1))
+    trajectory[:, 0] = nw.x
+    constraint_violations = np.zeros(nsim)
+    lda_dist = np.zeros(nsim)
+    for i in range(nsim):
+        u_centr, _ = nw.centr_solve2()
+        if use_centr_contr:
+            nw.simulate_timestep(u_centr)
+        else:
+            u, _ = nw.ada_solve()
+            nw.simulate_timestep(u)
+
+        trajectory[:, i+1] = nw.x
+        cv, ldad = nw.calcualte_metrics()
+        if not use_centr_contr:
+            constraint_violations[i] = cv
+            lda_dist[i] = ldad
+
+        if i == plot_convergence_at and not use_centr_contr:
+            nw.plot_convergence()
+
+    return trajectory, constraint_violations, lda_dist
+
+
+def sweep_iterations(iterations: List[int], 
+                     N: int = 8, nsim: int = 15, 
+                     ada_eps: float = 1e-6, ada_alpha: float = 0.9):
+    trajectories = []
+    constraint_violations = []
+    lda_dist = []
+    plt.figure(figsize=(7.3,5))
+    for iter in iterations:
+        nodes = np.array([node(x0=[1.4,  0.1, 0., 0.], xt=[1.,   0.,  1.,  0.]),
+                  node(x0=[0.6, -0.1, 0., -0.4], xt=[1.9, 0.,  1.,  0.]),  
+                  node(x0=[0.5,  0.2, 0.7, -0.2], xt=[1.45, 0., 1.9, 0.])])
+        incidence_matrix = np.array([[ 1,  0,  1], 
+                                    [-1,  1,  0], 
+                                    [ 0, -1, -1]])
+        distance_bounds = np.array([[1.], [1.], [1.]])
+        nw = network(nodes=nodes, 
+                     incidence_matrix=incidence_matrix, 
+                     distance_bounds=distance_bounds,
+                     N=N, 
+                     ada_eps=ada_eps, 
+                     ada_iterations=iter, 
+                     ada_alpha=ada_alpha)
+        trajectory, cv, ldad = simulate_trajectory(nw, nsim=nsim)
+        trajectories.append(trajectory)
+        constraint_violations.append(cv)
+        lda_dist.append(ldad)
+
+        if iter < 0:
+            lbl = 'optimal'
+        else:
+            lbl = f'$l = {iter}$'
+        plt.plot(cv, label=lbl)
+    
+    plt.legend()
+    plt.xlabel('Time $t$')
+    plt.ylabel(r'$\sum_{m=0}^{p} max{0, E_{x,m} x}$')
+    if not os.path.exists(os.path.join(os.getcwd(), 'figures')):
+        os.mkdir(os.path.join(os.getcwd(), 'figures'))
+    plt.savefig(os.path.join(os.getcwd(), 'figures', 'constraint_violations.pdf'))
+    plt.close()
+    return trajectories, constraint_violations, lda_dist
+
+
+def plot_trajectories(trajectories: List[np.array], 
+                      iterations: List[int], 
+                      nodes: int = 3, 
+                      nx: int = 4, 
+                      selection: List[int] = None,
+                      colors: List[str] = ['tab:blue', 'tab:orange', 'tab:green']):
+    assert len(trajectories) == len(iterations), \
+        "The recorded trajectories and iterations must have the same length"
+
+    if selection:
+        trajectories = [trajectories[i] for i in selection]
+        iterations = [iterations[i] for i in selection]
+
+    for t, trajectory in enumerate(trajectories):
+        ax = plt.gca()
+        for i in range(nodes):
+            if i == 0:
+                if iterations[t] < 0:
+                    lbl = 'optimal'
+                else:
+                    lbl = f'$l = {iterations[t]}$'
+            else:
+                lbl = None
+
+            if t == 0 and i == 0:
+                start_label = 'start'
+                target_label = 'target'
+            else:
+                start_label = None
+                target_label = None
+
+            ax.scatter(trajectory[nx*i, 0], trajectory[nx*i+2, 0], 
+                        marker='o', 
+                        color='red',
+                        label=start_label)   
+            ax.scatter(trajectory[nx*i, -1], trajectory[nx*i+2, -1], 
+                        marker='o', 
+                        color='green',
+                        label=target_label)
+
+            ax.plot(trajectory[nx*i, :], trajectory[nx*i+2, :], 
+                    marker='x',
+                    linestyle='--', 
+                    dashes=(2, t * 1),
+                    label=lbl,
+                    color=colors[i])
+
+        
+    
+    plt.legend()
+    leg = ax.get_legend()
+    for hdl in leg.legendHandles[2:]:
+        hdl.set_color('black')
+    if not os.path.exists(os.path.join(os.getcwd(), 'figures')):
+        os.mkdir(os.path.join(os.getcwd(), 'figures'))
+    plt.savefig(os.path.join(os.getcwd(), 'figures', 'trajectories.pdf'))
+    plt.close()
