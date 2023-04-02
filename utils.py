@@ -6,10 +6,12 @@ from numpy import eye
 import cvxpy
 from typing import List
 import matplotlib.pyplot as plt
+import copy
 
 plt.rcParams.update({
-    'text.usetex': False
+    'text.usetex': True
 })
+
 
 def condensed_form(A: np.array, B: np.array, 
                    Q: np.array, R: np.array, 
@@ -73,7 +75,8 @@ class node(object):
     def __init__(self, 
                  x0: list = [0., 0., 0., 0.],
                  xt: list = [0., 0., 0., 0.],
-                 N: int = 2) -> None:
+                 v_max: float = 1.0,
+                 N: int = 5) -> None:
         self.N = N
         self.x = x0
         self.xt = xt
@@ -81,6 +84,8 @@ class node(object):
         self.B = sp.kron(eye(2), np.array([[0.], [1.]])).todense()
         self.C_u = np.array([[1., 0.], [0., -1.]])
         self.c_u = np.array([1, 1])
+        self.C_x = sp.kron(np.array([[1, 0], [0, -1]]), np.array([[0, 1, 0, 0], [0, 0, 0, 1]]))
+        self.c_x = np.array([1, 1, 1, 1]) * v_max
         
         self.nx, self.nu = np.shape(self.B)
 
@@ -138,7 +143,7 @@ class network(object):
                  distance_bounds: np.array = None,
                  N: int = 2, 
                  ada_iterations: int = 100,
-                 ada_eps: float = 1e-4,
+                 ada_eps: float = 1e-8,
                  ada_alpha: float = 0.9) -> None:
         self.nodes = nodes
         self.D = incidence_matrix
@@ -268,7 +273,7 @@ class network(object):
         plt.figure(figsize=(6, 6))
         plt.plot(lda_err_norm)
         plt.yscale('log')
-        plt.xlabel('Iterations $l$')
+        plt.xlabel('Iterations $\ell$')
         plt.ylabel(r'$||\lambda_{\epsilon, l} - \lambda_{optimal}||_1$')
         plt.grid(which='both')
 
@@ -316,6 +321,9 @@ def simulate_trajectory(nw: network,
 
 
 def sweep_iterations(iterations: List[int], 
+                     nodes: np.array,
+                     incidence_matrix: np.array,
+                     distance_bounds: np.array,
                      N: int = 8, nsim: int = 15, 
                      ada_eps: float = 1e-6, ada_alpha: float = 0.9):
     trajectories = []
@@ -323,14 +331,7 @@ def sweep_iterations(iterations: List[int],
     lda_dist = []
     plt.figure(figsize=(7.3,5))
     for iter in iterations:
-        nodes = np.array([node(x0=[1.4,  0.1, 0., 0.], xt=[1.,   0.,  1.,  0.]),
-                  node(x0=[0.6, -0.1, 0., -0.4], xt=[1.9, 0.,  1.,  0.]),  
-                  node(x0=[0.5,  0.2, 0.7, -0.2], xt=[1.45, 0., 1.9, 0.])])
-        incidence_matrix = np.array([[ 1,  0,  1], 
-                                    [-1,  1,  0], 
-                                    [ 0, -1, -1]])
-        distance_bounds = np.array([[1.], [1.], [1.]])
-        nw = network(nodes=nodes, 
+        nw = network(nodes=copy.deepcopy(nodes), 
                      incidence_matrix=incidence_matrix, 
                      distance_bounds=distance_bounds,
                      N=N, 
@@ -345,12 +346,13 @@ def sweep_iterations(iterations: List[int],
         if iter < 0:
             lbl = 'optimal'
         else:
-            lbl = f'$l = {iter}$'
+            lbl = f'$\ell = {iter}$'
         plt.plot(cv, label=lbl)
     
     plt.legend()
     plt.xlabel('Time $t$')
-    plt.ylabel(r'$\sum_{m=0}^{p} max{0, E_{x,m} x}$')
+    #plt.ylabel(r'$\sum_{m=0}^{p} max{0, E_{x,m} x}$')
+    plt.ylabel('Constraint Violation')
     if not os.path.exists(os.path.join(os.getcwd(), 'figures')):
         os.mkdir(os.path.join(os.getcwd(), 'figures'))
     plt.savefig(os.path.join(os.getcwd(), 'figures', 'constraint_violations.pdf'))
@@ -360,25 +362,27 @@ def sweep_iterations(iterations: List[int],
 
 def plot_trajectories(trajectories: List[np.array], 
                       iterations: List[int], 
-                      nodes: int = 3, 
+                      nodes: np.array, 
                       nx: int = 4, 
                       selection: List[int] = None,
-                      colors: List[str] = ['tab:blue', 'tab:orange', 'tab:green']):
+                      colors: List[str] = ['tab:blue', 'tab:orange', 'tab:green', 'tab:purple']):
     assert len(trajectories) == len(iterations), \
         "The recorded trajectories and iterations must have the same length"
-
+        
+    nnodes = nodes.shape[0]
+        
     if selection:
         trajectories = [trajectories[i] for i in selection]
         iterations = [iterations[i] for i in selection]
 
     for t, trajectory in enumerate(trajectories):
         ax = plt.gca()
-        for i in range(nodes):
+        for i in range(nnodes):
             if i == 0:
                 if iterations[t] < 0:
                     lbl = 'optimal'
                 else:
-                    lbl = f'$l = {iterations[t]}$'
+                    lbl = f'$\ell = {iterations[t]}$'
             else:
                 lbl = None
 
@@ -388,15 +392,16 @@ def plot_trajectories(trajectories: List[np.array],
             else:
                 start_label = None
                 target_label = None
-
-            ax.scatter(trajectory[nx*i, 0], trajectory[nx*i+2, 0], 
-                        marker='o', 
-                        color='red',
-                        label=start_label)   
-            ax.scatter(trajectory[nx*i, -1], trajectory[nx*i+2, -1], 
-                        marker='o', 
-                        color='green',
-                        label=target_label)
+                
+            if iterations[t] < 0:
+                ax.scatter(trajectory[nx*i, 0], trajectory[nx*i+2, 0], 
+                            marker='^', 
+                            color=colors[i],
+                            label=start_label)   
+                ax.scatter(nodes[i].xt[0], nodes[i].xt[2], 
+                            marker='v', 
+                            color=colors[i],
+                            label=target_label)
 
             ax.plot(trajectory[nx*i, :], trajectory[nx*i+2, :], 
                     marker='x',
@@ -404,8 +409,6 @@ def plot_trajectories(trajectories: List[np.array],
                     dashes=(2, t * 1),
                     label=lbl,
                     color=colors[i])
-
-        
     
     plt.legend()
     leg = ax.get_legend()
