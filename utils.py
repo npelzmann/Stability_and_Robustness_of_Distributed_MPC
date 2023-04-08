@@ -329,8 +329,8 @@ def sweep_iterations(iterations: List[int],
     trajectories = []
     constraint_violations = []
     lda_dist = []
-    plt.figure(figsize=(7.3,5))
-    for iter in iterations:
+    plt.figure(figsize=(5,2.5))
+    for t, iter in enumerate(iterations):
         nw = network(nodes=copy.deepcopy(nodes), 
                      incidence_matrix=incidence_matrix, 
                      distance_bounds=distance_bounds,
@@ -345,9 +345,15 @@ def sweep_iterations(iterations: List[int],
 
         if iter < 0:
             lbl = 'optimal'
+            alpha = 0.4
         else:
             lbl = f'$\ell = {iter}$'
-        plt.plot(cv, label=lbl)
+            alpha = 1.0
+        plt.plot(cv, 
+                 color='black',
+                 linestyle=(0, (2, 1 * t)), 
+                 alpha=alpha,
+                 label=lbl)
     
     plt.legend()
     plt.xlabel('Time $t$')
@@ -381,8 +387,10 @@ def plot_trajectories(trajectories: List[np.array],
             if i == 0:
                 if iterations[t] < 0:
                     lbl = 'optimal'
+                    alpha = 0.4
                 else:
                     lbl = f'$\ell = {iterations[t]}$'
+                    alpha = 1.0
             else:
                 lbl = None
 
@@ -405,14 +413,14 @@ def plot_trajectories(trajectories: List[np.array],
 
             ax.plot(trajectory[nx*i, :], trajectory[nx*i+2, :], 
                     marker='x',
-                    linestyle='--', 
-                    dashes=(2, t * 1),
+                    linestyle=(0, (2, 1 * t)), 
+                    alpha=alpha,
                     label=lbl,
                     color=colors[i])
     
     plt.legend()
     leg = ax.get_legend()
-    for hdl in leg.legendHandles[2:]:
+    for hdl in leg.legendHandles:
         hdl.set_color('black')
     if not os.path.exists(os.path.join(os.getcwd(), 'figures')):
         os.mkdir(os.path.join(os.getcwd(), 'figures'))

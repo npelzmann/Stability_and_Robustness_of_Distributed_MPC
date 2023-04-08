@@ -21,7 +21,7 @@ if __name__ == '__main__':
 
     # utils.simulate_trajectory(nw, nsim=15, plot_convergence_at=0)
 
-    iterations = [-1, 1, 10, 2500]
+    iterations = [-1, 2500, 1000, 100, 10, 1]
     trajectories, _, _ = utils.sweep_iterations(iterations, nodes, incidence_matrix, distance_bounds, nsim=15)
     utils.plot_trajectories(trajectories, iterations, nodes)
 
